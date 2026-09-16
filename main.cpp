@@ -1,11 +1,12 @@
 #include <iostream>
 #include <sys/socket.h>
-#include <stdio.h>
+#include <cstdio>
 #include <netinet/in.h>
-#include <string.h>
+#include <cstring>
 #include <unistd.h>
 
-#define PORT 6379
+constexpr int PORT=6379;
+constexpr int BACKLOG_FOR_SOCKET=16;
 
 int main(){
     int socket_fd=socket(AF_INET,SOCK_STREAM,0);
@@ -24,12 +25,12 @@ int main(){
         close(socket_fd);
         return 1;
     }
-    if(listen(socket_fd,16)==-1){
+    if(listen(socket_fd,BACKLOG_FOR_SOCKET)==-1){
         perror("listen");
         close(socket_fd);
         return 1;
     }
-    std::cout<<"server is listening on port: "<<PORT<<"\n";
+    std::cout<<"server is listening on port: "<<PORT<<'\n';
     close(socket_fd);
     return 0;
 }
