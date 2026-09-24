@@ -5,12 +5,15 @@
 #include <cstring>
 #include <unistd.h>
 #include <thread>
+#include <mutex>
 
 constexpr int PORT=6379;
 constexpr int BACKLOG_FOR_SOCKET=16;
 constexpr int BUFF_SIZE=1024;
 constexpr char PING_REPLY[]="+PONG\r\n";
 constexpr ssize_t PING_REPLY_LEN=sizeof(PING_REPLY)-1;
+
+std::mutex cout_mutex;
 
 void handle_client(int conn_fd){
     while(true){
@@ -23,19 +26,28 @@ void handle_client(int conn_fd){
             perror("read");
             break;
         }
-        std::cout<<"read function return value: "<<rval<<'\n';
-        std::cout.write(rbuff,rval);
+        {
+            std::lock_guard<std::mutex>lock(cout_mutex);
+            std::cout<<"read function return value: "<<rval<<'\n';
+            std::cout.write(rbuff,rval);
+        }
         ssize_t wval=write(conn_fd,PING_REPLY,PING_REPLY_LEN);
         if(wval==-1){
             perror("write");
             break;
         }
         if(wval<PING_REPLY_LEN){
-            std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
+            {
+                std::lock_guard<std::mutex>lock(cout_mutex);
+                std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
+            }
             break;
         }
-        std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
+        {
+            std::lock_guard<std::mutex>lock(cout_mutex);
+            std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
         }
+    }
     close(conn_fd);
 }
 
@@ -77,7 +89,10 @@ int main(){
             close(listen_fd);
             return 1;
         }
-        std::cout<<"client socket fd is "<<conn_fd<<'\n';
+        {
+            std::lock_guard<std::mutex>lock(cout_mutex);
+            std::cout<<"client socket fd is "<<conn_fd<<'\n';
+        }
         std::thread t(handle_client,conn_fd);
         t.detach();
     }
