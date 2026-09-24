@@ -4,6 +4,7 @@
 #include <netinet/in.h>
 #include <cstring>
 #include <unistd.h>
+#include <thread>
 
 constexpr int PORT=6379;
 constexpr int BACKLOG_FOR_SOCKET=16;
@@ -11,31 +12,31 @@ constexpr int BUFF_SIZE=1024;
 constexpr char PING_REPLY[]="+PONG\r\n";
 constexpr ssize_t PING_REPLY_LEN=sizeof(PING_REPLY)-1;
 
-void clientConnectionHandling(int conn_fd){
+void handle_client(int conn_fd){
     while(true){
-            char rbuff[BUFF_SIZE];
-            ssize_t rval=read(conn_fd,rbuff,sizeof(rbuff));
-            if(rval==0){
-                break;
-            }
-            if(rval==-1){
-                perror("read");
-                break;
-            }
-            std::cout<<"read function return value: "<<rval<<'\n';
-            std::cout.write(rbuff,rval);
-            ssize_t wval=write(conn_fd,PING_REPLY,PING_REPLY_LEN);
-            if(wval==-1){
-                perror("write");
-                break;
-            }
-            if(wval<PING_REPLY_LEN){
-                std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
-                break;
-            }
-            std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
+        char rbuff[BUFF_SIZE];
+        ssize_t rval=read(conn_fd,rbuff,sizeof(rbuff));
+        if(rval==0){
+            break;
         }
-        close(conn_fd);
+        if(rval==-1){
+            perror("read");
+            break;
+        }
+        std::cout<<"read function return value: "<<rval<<'\n';
+        std::cout.write(rbuff,rval);
+        ssize_t wval=write(conn_fd,PING_REPLY,PING_REPLY_LEN);
+        if(wval==-1){
+            perror("write");
+            break;
+        }
+        if(wval<PING_REPLY_LEN){
+            std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
+            break;
+        }
+        std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
+        }
+    close(conn_fd);
 }
 
 int main(){
@@ -77,6 +78,7 @@ int main(){
             return 1;
         }
         std::cout<<"client socket fd is "<<conn_fd<<'\n';
-        clientConnectionHandling(conn_fd);
+        std::thread t(handle_client,conn_fd);
+        t.detach();
     }
 }

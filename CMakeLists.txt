@@ -6,3 +6,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(onyx main.cpp)
 target_compile_options(onyx 
 PRIVATE -Wall -Wextra)
+find_package(Threads REQUIRED)
+target_link_libraries(onyx
+PRIVATE Threads::Threads)
