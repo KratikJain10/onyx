@@ -11,6 +11,33 @@ constexpr int BUFF_SIZE=1024;
 constexpr char PING_REPLY[]="+PONG\r\n";
 constexpr ssize_t PING_REPLY_LEN=sizeof(PING_REPLY)-1;
 
+void clientConnectionHandling(int conn_fd){
+    while(true){
+            char rbuff[BUFF_SIZE];
+            ssize_t rval=read(conn_fd,rbuff,sizeof(rbuff));
+            if(rval==0){
+                break;
+            }
+            if(rval==-1){
+                perror("read");
+                break;
+            }
+            std::cout<<"read function return value: "<<rval<<'\n';
+            std::cout.write(rbuff,rval);
+            ssize_t wval=write(conn_fd,PING_REPLY,PING_REPLY_LEN);
+            if(wval==-1){
+                perror("write");
+                break;
+            }
+            if(wval<PING_REPLY_LEN){
+                std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
+                break;
+            }
+            std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
+        }
+        close(conn_fd);
+}
+
 int main(){
     int listen_fd=socket(AF_INET,SOCK_STREAM,0);
     if(listen_fd==-1){
@@ -50,29 +77,6 @@ int main(){
             return 1;
         }
         std::cout<<"client socket fd is "<<conn_fd<<'\n';
-        char rbuff[BUFF_SIZE];    
-        while(true){
-            ssize_t rval=read(conn_fd,rbuff,sizeof(rbuff));
-            if(rval==0){
-                break;
-            }
-            if(rval==-1){
-                perror("read");
-                break;
-            }
-            std::cout<<"read function return value: "<<rval<<'\n';
-            std::cout.write(rbuff,rval);
-            ssize_t wval=write(conn_fd,PING_REPLY,PING_REPLY_LEN);
-            if(wval==-1){
-                perror("write");
-                break;
-            }
-            if(wval<PING_REPLY_LEN){
-                std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
-                break;
-            }
-            std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
-        }
-        close(conn_fd);
+        clientConnectionHandling(conn_fd);
     }
 }
