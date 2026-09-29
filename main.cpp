@@ -6,14 +6,98 @@
 #include <unistd.h>
 #include <poll.h>
 #include <vector>
+#include <unordered_map>
+#include <string>
 
 constexpr int PORT=6379;
 constexpr int BACKLOG_FOR_SOCKET=16;
 constexpr int BUFF_SIZE=1024;
 constexpr char PING_REPLY[]="+PONG\r\n";
 constexpr ssize_t PING_REPLY_LEN=sizeof(PING_REPLY)-1;
+constexpr char PROTOCOL_ERR_REPLY[]="-ERR Protocol error\r\n";
+constexpr ssize_t PROTOCOL_ERR_REPLY_LEN=sizeof(PROTOCOL_ERR_REPLY)-1;
 
-bool handle_client(int conn_fd){
+enum class Command {PING,ECHO,UNKNOWN};
+
+Command get_command_enum(const std::string& command){
+    static const std::unordered_map<std::string,Command>commands_map={
+        {"PING",Command::PING},{"ECHO",Command::ECHO}
+    };
+    auto it=commands_map.find(command);
+    if(it!=commands_map.end())return it->second;
+    return Command::UNKNOWN;
+}
+
+void to_upper(std::string& str){
+    for(auto& s:str)s=(char)toupper((unsigned char)s);
+}
+
+std::string client_command_handler(std::vector<std::string>& client_commands_and_args){
+    std::string response="";
+    size_t client_commands_and_args_size=client_commands_and_args.size();
+    to_upper(client_commands_and_args[0]);
+    switch (get_command_enum(client_commands_and_args[0]))
+    {
+    case Command::PING:
+        if(client_commands_and_args_size>1){
+            response="-ERR wrong number of arguments for 'PING' command\r\n";
+        }else{
+            response="+PONG\r\n";
+        }
+        break;
+    case Command::ECHO:
+        if(client_commands_and_args_size!=2){
+            response="-ERR wrong number of arguments for 'ECHO' command\r\n";
+        }else{
+            size_t echo_arg_len=client_commands_and_args[1].length();
+            response+='$'+std::to_string(echo_arg_len)+"\r\n"+client_commands_and_args[1]+"\r\n";
+        }
+        break;
+    case Command::UNKNOWN:
+        response="-ERR unknown command '"+client_commands_and_args[0]+"'\r\n";
+        break;
+    }
+    return response;
+}
+
+int client_data_parser(const std::string& client_data,std::vector<std::string>& client_commands_and_args){
+      size_t client_data_size=client_data.length();
+      if(client_data.length()==0)return 0;
+      size_t start=0;
+      if(client_data[start]!='*')return -1;
+      size_t nloc=client_data.find("\r\n",start);
+      if(nloc==std::string::npos)return 0;
+      int len_client_data_arr=0;
+      start++;
+      while(start<nloc){
+        if(client_data[start]-'0'<0 || client_data[start]-'0'>9)return -1;
+        len_client_data_arr=len_client_data_arr*10+(client_data[start]-'0');
+        start++;
+      }
+      start=nloc+2;
+      for(int i=0;i<len_client_data_arr;i++){
+        if(start>=client_data_size)return 0;
+        if(client_data[start]!='$')return -1;
+        else start++;
+        size_t ntloc=client_data.find("\r\n",start);
+        if(ntloc==std::string::npos)return 0;
+        int len_client_data=0;
+        while(start<ntloc){
+            if(client_data[start]-'0'<0 || client_data[start]-'0'>9)return -1;
+            len_client_data=len_client_data*10+(client_data[start]-'0');
+            start++;
+        }
+        start=ntloc+2;
+        if(start+len_client_data+2>client_data_size)return 0;
+        if(client_data[start+len_client_data]!='\r' || client_data[start+len_client_data+1]!='\n')return -1;
+        client_commands_and_args.push_back(client_data.substr(start,len_client_data));
+        start+=len_client_data+2;
+      }
+      return start;
+}
+
+bool handle_client(int conn_fd,std::string& client_data){
+        std::vector<std::string> client_commands_and_args;
         char rbuff[BUFF_SIZE];
         ssize_t rval=read(conn_fd,rbuff,sizeof(rbuff));
         if(rval==0){
@@ -25,16 +109,42 @@ bool handle_client(int conn_fd){
         }
         std::cout<<"read function return value: "<<rval<<'\n';
         std::cout.write(rbuff,rval);
-        ssize_t wval=write(conn_fd,PING_REPLY,PING_REPLY_LEN);
-        if(wval==-1){
-            perror("write");
+        std::cout<<'\n';
+        client_data.append(rbuff,rval);
+        std::cout<<"Client Data: "<<client_data<<"\n Client Data Length: "<<client_data.length()<<'\n';
+        int pval=client_data_parser(client_data,client_commands_and_args);
+        while(pval>0){
+        if(!client_commands_and_args.empty()){
+                std::string reponse_to_client=client_command_handler(client_commands_and_args);
+                ssize_t response_to_client_len=reponse_to_client.length();
+                ssize_t wval=write(conn_fd,reponse_to_client.data(),response_to_client_len);
+                if(wval==-1){
+                    perror("write");
+                    return false;
+                }
+                if(wval<response_to_client_len){
+                    std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
+                    return true;
+                }
+                std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
+            }
+            client_data.erase(0,pval);
+            client_commands_and_args.clear();
+            pval=client_data_parser(client_data,client_commands_and_args);
+        }
+        if(pval==-1){
+            ssize_t wval=write(conn_fd,PROTOCOL_ERR_REPLY,PROTOCOL_ERR_REPLY_LEN);
+            if(wval==-1){
+                perror("write");
+                return false;
+            }
+            if(wval<PROTOCOL_ERR_REPLY_LEN){
+                std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
+                return true;
+            }
+            std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
             return false;
         }
-        if(wval<PING_REPLY_LEN){
-            std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
-            return true;
-        }
-        std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
         return true;
 }
 
@@ -68,6 +178,7 @@ int main(){
     }
     std::cout<<"server is listening on port: "<<PORT<<'\n';
     std::vector<struct pollfd>fds;
+    std::unordered_map<int,std::string>clients_data;
     struct pollfd p{};
     p.fd=listen_fd;
     p.events=POLLIN;
@@ -96,11 +207,12 @@ int main(){
                     struct pollfd c{};
                     c.fd=conn_fd;
                     c.events=POLLIN;
-                    fds.push_back(c);
+                    fds.push_back(c);  
                 }   
             }else if(fds[i].revents){
-                bool is_client_connected=handle_client(fds[i].fd);
+                bool is_client_connected=handle_client(fds[i].fd,clients_data[fds[i].fd]);
                 if(!is_client_connected){
+                     clients_data.erase(fds[i].fd);
                      close(fds[i].fd);
                      fds[i].fd=-1;
                 }
