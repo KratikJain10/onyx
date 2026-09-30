@@ -8,6 +8,7 @@
 #include <vector>
 #include <unordered_map>
 #include <string>
+#include <utility>
 
 constexpr int PORT=6379;
 constexpr int BACKLOG_FOR_SOCKET=16;
@@ -17,11 +18,18 @@ constexpr ssize_t PING_REPLY_LEN=sizeof(PING_REPLY)-1;
 constexpr char PROTOCOL_ERR_REPLY[]="-ERR Protocol error\r\n";
 constexpr ssize_t PROTOCOL_ERR_REPLY_LEN=sizeof(PROTOCOL_ERR_REPLY)-1;
 
-enum class Command {PING,ECHO,UNKNOWN};
+enum class Command {PING,ECHO,SET,GET,UNKNOWN};
+
+std::string bstring_transform(const std::string &input){
+    std::string tinput="";
+    size_t value_len=input.length();
+    tinput+='$'+std::to_string(value_len)+"\r\n"+input+"\r\n";
+    return tinput;
+}
 
 Command get_command_enum(const std::string& command){
     static const std::unordered_map<std::string,Command>commands_map={
-        {"PING",Command::PING},{"ECHO",Command::ECHO}
+        {"PING",Command::PING},{"ECHO",Command::ECHO},{"SET",Command::SET},{"GET",Command::GET}
     };
     auto it=commands_map.find(command);
     if(it!=commands_map.end())return it->second;
@@ -32,7 +40,7 @@ void to_upper(std::string& str){
     for(auto& s:str)s=(char)toupper((unsigned char)s);
 }
 
-std::string client_command_handler(std::vector<std::string>& client_commands_and_args){
+std::string client_command_handler(std::vector<std::string>& client_commands_and_args,std::unordered_map<std::string, std::string>&db){
     std::string response="";
     size_t client_commands_and_args_size=client_commands_and_args.size();
     to_upper(client_commands_and_args[0]);
@@ -49,8 +57,33 @@ std::string client_command_handler(std::vector<std::string>& client_commands_and
         if(client_commands_and_args_size!=2){
             response="-ERR wrong number of arguments for 'ECHO' command\r\n";
         }else{
-            size_t echo_arg_len=client_commands_and_args[1].length();
-            response+='$'+std::to_string(echo_arg_len)+"\r\n"+client_commands_and_args[1]+"\r\n";
+            response=bstring_transform(client_commands_and_args[1]);
+        }
+        break;
+    case Command::SET:
+        if(client_commands_and_args_size<3){
+            response="-ERR wrong number of arguments for 'SET' command\r\n";
+        }else if(client_commands_and_args_size>3){
+            response="-ERR syntax error\r\n";
+        }
+        else{
+            std::string key=std::move(client_commands_and_args[1]);
+            std::string value=std::move(client_commands_and_args[2]);
+            db[key]=value;
+            response+="+OK\r\n";
+        }
+        break;
+    case Command::GET:
+        if(client_commands_and_args_size!=2){
+            response="-ERR wrong number of arguments for 'GET' command\r\n";
+        }else{
+            std::string key=client_commands_and_args[1];
+            auto it=db.find(key);
+            if(it==db.end()){
+                response="$-1\r\n";
+                break;
+            }
+            response=bstring_transform(it->second);
         }
         break;
     case Command::UNKNOWN:
@@ -96,7 +129,7 @@ int client_data_parser(const std::string& client_data,std::vector<std::string>& 
       return start;
 }
 
-bool handle_client(int conn_fd,std::string& client_data){
+bool handle_client(int conn_fd,std::string& client_data,std::unordered_map<std::string, std::string>&db){
         std::vector<std::string> client_commands_and_args;
         char rbuff[BUFF_SIZE];
         ssize_t rval=read(conn_fd,rbuff,sizeof(rbuff));
@@ -115,7 +148,7 @@ bool handle_client(int conn_fd,std::string& client_data){
         int pval=client_data_parser(client_data,client_commands_and_args);
         while(pval>0){
         if(!client_commands_and_args.empty()){
-                std::string reponse_to_client=client_command_handler(client_commands_and_args);
+                std::string reponse_to_client=client_command_handler(client_commands_and_args,db);
                 ssize_t response_to_client_len=reponse_to_client.length();
                 ssize_t wval=write(conn_fd,reponse_to_client.data(),response_to_client_len);
                 if(wval==-1){
@@ -178,6 +211,7 @@ int main(){
     }
     std::cout<<"server is listening on port: "<<PORT<<'\n';
     std::vector<struct pollfd>fds;
+    std::unordered_map<std::string,std::string>db;
     std::unordered_map<int,std::string>clients_data;
     struct pollfd p{};
     p.fd=listen_fd;
@@ -210,7 +244,7 @@ int main(){
                     fds.push_back(c);  
                 }   
             }else if(fds[i].revents){
-                bool is_client_connected=handle_client(fds[i].fd,clients_data[fds[i].fd]);
+                bool is_client_connected=handle_client(fds[i].fd,clients_data[fds[i].fd],db);
                 if(!is_client_connected){
                      clients_data.erase(fds[i].fd);
                      close(fds[i].fd);
