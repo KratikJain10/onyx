@@ -67,9 +67,7 @@ std::string client_command_handler(std::vector<std::string>& client_commands_and
             response="-ERR syntax error\r\n";
         }
         else{
-            std::string key=std::move(client_commands_and_args[1]);
-            std::string value=std::move(client_commands_and_args[2]);
-            db[key]=value;
+            db[std::move(client_commands_and_args[1])]=std::move(client_commands_and_args[2]);
             response+="+OK\r\n";
         }
         break;
@@ -77,8 +75,7 @@ std::string client_command_handler(std::vector<std::string>& client_commands_and
         if(client_commands_and_args_size!=2){
             response="-ERR wrong number of arguments for 'GET' command\r\n";
         }else{
-            std::string key=client_commands_and_args[1];
-            auto it=db.find(key);
+            auto it=db.find(client_commands_and_args[1]);
             if(it==db.end()){
                 response="$-1\r\n";
                 break;
