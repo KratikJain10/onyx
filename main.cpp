@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <string>
 #include <utility>
+#include <chrono>
 
 constexpr int PORT=6379;
 constexpr int BACKLOG_FOR_SOCKET=16;
@@ -19,6 +20,19 @@ constexpr char PROTOCOL_ERR_REPLY[]="-ERR Protocol error\r\n";
 constexpr ssize_t PROTOCOL_ERR_REPLY_LEN=sizeof(PROTOCOL_ERR_REPLY)-1;
 
 enum class Command {PING,ECHO,SET,GET,UNKNOWN};
+enum class Optional_arguments {EX,PX,UNKNOWN};
+
+long long string_to_int(const std::string &s,size_t st,size_t en){
+    long long res=0;
+    if(en==st)return -1;
+    if(en-st>18)return -1;
+    while(st<en){
+         if(s[st]-'0'<0 || s[st]-'0'>9)return -1;
+            res=res*10+(s[st]-'0');
+        st++;
+    }
+    return res;
+}
 
 std::string bstring_transform(const std::string &input){
     std::string tinput="";
@@ -36,11 +50,48 @@ Command get_command_enum(const std::string& command){
     return Command::UNKNOWN;
 }
 
+Optional_arguments get_optionalarg_enum(const std::string& command){
+    static const std::unordered_map<std::string,Optional_arguments>optional_arguments_map={
+        {"EX",Optional_arguments::EX},{"PX",Optional_arguments::PX}
+    };
+    auto it=optional_arguments_map.find(command);
+    if(it!=optional_arguments_map.end())return it->second;
+    return Optional_arguments::UNKNOWN;
+}
+
 void to_upper(std::string& str){
     for(auto& s:str)s=(char)toupper((unsigned char)s);
 }
 
-std::string client_command_handler(std::vector<std::string>& client_commands_and_args,std::unordered_map<std::string, std::string>&db){
+int set_expiry_handler(std::vector<std::string>& client_commands_and_args,std::unordered_map<std::string,std::chrono::steady_clock::time_point>&expiries){
+    switch (get_optionalarg_enum(client_commands_and_args[3]))
+    {
+    case Optional_arguments::EX:
+        {
+        long long expiryarg=string_to_int(client_commands_and_args[4],0,client_commands_and_args[4].size());
+        if(expiryarg==0)return -1;
+        if(expiryarg==-1)return -2;
+        auto expiry=std::chrono::steady_clock::now()+std::chrono::seconds(expiryarg);
+        expiries[client_commands_and_args[1]]=expiry;
+        }
+        break;
+    case Optional_arguments::PX:
+        {
+        long long expiryarg=string_to_int(client_commands_and_args[4],0,client_commands_and_args[4].size());
+        if(expiryarg==0)return -1;
+        if(expiryarg==-1)return -2;
+        auto expiry=std::chrono::steady_clock::now()+std::chrono::milliseconds(expiryarg);
+        expiries[client_commands_and_args[1]]=expiry;
+        }
+        break;
+    case Optional_arguments::UNKNOWN:
+        return -3;
+        break;
+    }
+    return 0;
+}
+
+std::string client_command_handler(std::vector<std::string>& client_commands_and_args,std::unordered_map<std::string, std::string>&db,std::unordered_map<std::string,std::chrono::steady_clock::time_point>&expiries){
     std::string response="";
     size_t client_commands_and_args_size=client_commands_and_args.size();
     to_upper(client_commands_and_args[0]);
@@ -61,12 +112,35 @@ std::string client_command_handler(std::vector<std::string>& client_commands_and
         }
         break;
     case Command::SET:
-        if(client_commands_and_args_size<3){
+        if(client_commands_and_args_size<3 || client_commands_and_args_size==4){
             response="-ERR wrong number of arguments for 'SET' command\r\n";
-        }else if(client_commands_and_args_size>3){
+        }else if(client_commands_and_args_size>5){
             response="-ERR syntax error\r\n";
         }
         else{
+            if(client_commands_and_args_size==5)
+            {
+                int set_expiry_handler_err_no=set_expiry_handler(client_commands_and_args,expiries);
+                switch (set_expiry_handler_err_no)
+                {
+                case -1:
+                    response="-ERR invalid expire time in 'set' command\r\n";
+                    return response;
+                    break;
+                case -2:
+                    response="-ERR value is not an integer or out of range\r\n";
+                    return response;
+                    break;
+                case -3:
+                    response="-ERR syntax error\r\n";
+                    return response;
+                    break;
+                default:
+                    break;
+                }
+            }else{
+                expiries.erase(client_commands_and_args[1]);
+            }
             db[std::move(client_commands_and_args[1])]=std::move(client_commands_and_args[2]);
             response+="+OK\r\n";
         }
@@ -80,7 +154,15 @@ std::string client_command_handler(std::vector<std::string>& client_commands_and
                 response="$-1\r\n";
                 break;
             }
-            response=bstring_transform(it->second);
+            auto ite=expiries.find(client_commands_and_args[1]);
+            if(ite==expiries.end() || ite->second>std::chrono::steady_clock::now()){
+               response=bstring_transform(it->second);
+            }
+            else{
+               response="$-1\r\n";
+               expiries.erase(ite);
+               db.erase(it);
+            }
         }
         break;
     case Command::UNKNOWN:
@@ -97,13 +179,9 @@ int client_data_parser(const std::string& client_data,std::vector<std::string>& 
       if(client_data[start]!='*')return -1;
       size_t nloc=client_data.find("\r\n",start);
       if(nloc==std::string::npos)return 0;
-      int len_client_data_arr=0;
       start++;
-      while(start<nloc){
-        if(client_data[start]-'0'<0 || client_data[start]-'0'>9)return -1;
-        len_client_data_arr=len_client_data_arr*10+(client_data[start]-'0');
-        start++;
-      }
+      long long len_client_data_arr=string_to_int(client_data,start,nloc);
+      if(len_client_data_arr==-1)return -1;
       start=nloc+2;
       for(int i=0;i<len_client_data_arr;i++){
         if(start>=client_data_size)return 0;
@@ -111,12 +189,8 @@ int client_data_parser(const std::string& client_data,std::vector<std::string>& 
         else start++;
         size_t ntloc=client_data.find("\r\n",start);
         if(ntloc==std::string::npos)return 0;
-        int len_client_data=0;
-        while(start<ntloc){
-            if(client_data[start]-'0'<0 || client_data[start]-'0'>9)return -1;
-            len_client_data=len_client_data*10+(client_data[start]-'0');
-            start++;
-        }
+        long long len_client_data=string_to_int(client_data,start,ntloc);
+        if(len_client_data==-1)return -1;
         start=ntloc+2;
         if(start+len_client_data+2>client_data_size)return 0;
         if(client_data[start+len_client_data]!='\r' || client_data[start+len_client_data+1]!='\n')return -1;
@@ -126,7 +200,7 @@ int client_data_parser(const std::string& client_data,std::vector<std::string>& 
       return start;
 }
 
-bool handle_client(int conn_fd,std::string& client_data,std::unordered_map<std::string, std::string>&db){
+bool handle_client(int conn_fd,std::string& client_data,std::unordered_map<std::string, std::string>&db,std::unordered_map<std::string,std::chrono::steady_clock::time_point>&expiries){
         std::vector<std::string> client_commands_and_args;
         char rbuff[BUFF_SIZE];
         ssize_t rval=read(conn_fd,rbuff,sizeof(rbuff));
@@ -145,7 +219,7 @@ bool handle_client(int conn_fd,std::string& client_data,std::unordered_map<std::
         int pval=client_data_parser(client_data,client_commands_and_args);
         while(pval>0){
         if(!client_commands_and_args.empty()){
-                std::string reponse_to_client=client_command_handler(client_commands_and_args,db);
+                std::string reponse_to_client=client_command_handler(client_commands_and_args,db,expiries);
                 ssize_t response_to_client_len=reponse_to_client.length();
                 ssize_t wval=write(conn_fd,reponse_to_client.data(),response_to_client_len);
                 if(wval==-1){
@@ -210,6 +284,7 @@ int main(){
     std::vector<struct pollfd>fds;
     std::unordered_map<std::string,std::string>db;
     std::unordered_map<int,std::string>clients_data;
+    std::unordered_map<std::string,std::chrono::steady_clock::time_point>key_expiries;
     struct pollfd p{};
     p.fd=listen_fd;
     p.events=POLLIN;
@@ -241,7 +316,7 @@ int main(){
                     fds.push_back(c);  
                 }   
             }else if(fds[i].revents){
-                bool is_client_connected=handle_client(fds[i].fd,clients_data[fds[i].fd],db);
+                bool is_client_connected=handle_client(fds[i].fd,clients_data[fds[i].fd],db,key_expiries);
                 if(!is_client_connected){
                      clients_data.erase(fds[i].fd);
                      close(fds[i].fd);
