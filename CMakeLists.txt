@@ -5,5 +5,5 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF) 
 add_executable(onyx main.cpp)
 target_compile_options(onyx 
-PRIVATE -Wall -Wextra -fsanitize=address -fno-omit-frame-pointer)
-target_link_options(onyx PRIVATE -fsanitize=address)
+PRIVATE -Wall -Wextra $<$<CONFIG:Debug>:-fsanitize=address -fno-omit-frame-pointer>)
+target_link_options(onyx PRIVATE $<$<CONFIG:Debug>:-fsanitize=address>)
