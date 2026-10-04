@@ -23,6 +23,7 @@ constexpr ssize_t PROTOCOL_ERR_REPLY_LEN=sizeof(PROTOCOL_ERR_REPLY)-1;
 constexpr ssize_t POLL_TIMEOUT=100;
 constexpr std::chrono::milliseconds EXP_CYCLE_INTERVAL{100};
 constexpr std::chrono::milliseconds MAX_EXP_CYCLE_RUNTIME{25};
+constexpr bool DEBUG_MODE=false;
 
 enum class Command {PING,ECHO,SET,GET,UNKNOWN};
 enum class Optional_arguments {EX,PX,UNKNOWN};
@@ -224,11 +225,13 @@ bool handle_client(int conn_fd,std::string& client_data,std::unordered_map<std::
             perror("read");
             return false;
         }
-        std::cout<<"read function return value: "<<rval<<'\n';
-        std::cout.write(rbuff,rval);
-        std::cout<<'\n';
+        if(DEBUG_MODE){
+            std::cout<<"read function return value: "<<rval<<'\n';
+            std::cout.write(rbuff,rval);
+            std::cout<<'\n';
+        }
         client_data.append(rbuff,rval);
-        std::cout<<"Client Data: "<<client_data<<"\n Client Data Length: "<<client_data.length()<<'\n';
+        if(DEBUG_MODE)std::cout<<"Client Data: "<<client_data<<"\n Client Data Length: "<<client_data.length()<<'\n';
         int pval=client_data_parser(client_data,client_commands_and_args);
         while(pval>0){
         if(!client_commands_and_args.empty()){
@@ -243,7 +246,7 @@ bool handle_client(int conn_fd,std::string& client_data,std::unordered_map<std::
                     std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
                     return true;
                 }
-                std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
+                if(DEBUG_MODE)std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
             }
             client_data.erase(0,pval);
             client_commands_and_args.clear();
@@ -259,7 +262,7 @@ bool handle_client(int conn_fd,std::string& client_data,std::unordered_map<std::
                 std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
                 return true;
             }
-            std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
+            if(DEBUG_MODE)std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
             return false;
         }
         return true;
@@ -300,7 +303,7 @@ void expiration_handler(std::unordered_map<std::string,std::string>&db,std::unor
         }
     }
     
-    std::cout<<"expiration cycle deleted expired key : "<<tot_key_expired_cnt<<" total remaining : "<<tot_expiries-tot_key_expired_cnt<<'\n';
+    if(tot_key_expired_cnt>0 && DEBUG_MODE)std::cout<<"expiration cycle deleted expired key : "<<tot_key_expired_cnt<<" total remaining : "<<tot_expiries-tot_key_expired_cnt<<'\n';
 }
 
 int main(){
@@ -361,7 +364,7 @@ int main(){
                         close(listen_fd);
                         return 1;
                     }
-                    std::cout<<"client socket fd is "<<conn_fd<<'\n';
+                    if(DEBUG_MODE)std::cout<<"client socket fd is "<<conn_fd<<'\n';
                     struct pollfd c{};
                     c.fd=conn_fd;
                     c.events=POLLIN;
