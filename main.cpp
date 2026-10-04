@@ -12,6 +12,7 @@
 #include <chrono>
 #include <random>
 #include <cassert>
+#include <netinet/tcp.h>
 
 constexpr int PORT=6379;
 constexpr int BACKLOG_FOR_SOCKET=16;
@@ -233,38 +234,35 @@ bool handle_client(int conn_fd,std::string& client_data,std::unordered_map<std::
         client_data.append(rbuff,rval);
         if(DEBUG_MODE)std::cout<<"Client Data: "<<client_data<<"\n Client Data Length: "<<client_data.length()<<'\n';
         int pval=client_data_parser(client_data,client_commands_and_args);
+        std::string data_to_write="";
+        bool is_error=false;
         while(pval>0){
-        if(!client_commands_and_args.empty()){
+            if(!client_commands_and_args.empty()){
                 std::string reponse_to_client=client_command_handler(client_commands_and_args,db,expiries);
-                ssize_t response_to_client_len=reponse_to_client.length();
-                ssize_t wval=write(conn_fd,reponse_to_client.data(),response_to_client_len);
-                if(wval==-1){
-                    perror("write");
-                    return false;
-                }
-                if(wval<response_to_client_len){
-                    std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
-                    return true;
-                }
-                if(DEBUG_MODE)std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
+                data_to_write+=reponse_to_client;
             }
             client_data.erase(0,pval);
             client_commands_and_args.clear();
             pval=client_data_parser(client_data,client_commands_and_args);
         }
         if(pval==-1){
-            ssize_t wval=write(conn_fd,PROTOCOL_ERR_REPLY,PROTOCOL_ERR_REPLY_LEN);
+            data_to_write+=PROTOCOL_ERR_REPLY;
+            is_error=true;
+        }
+        ssize_t data_to_write_len=data_to_write.length();
+        if(data_to_write_len!=0){
+            ssize_t wval=write(conn_fd,data_to_write.data(),data_to_write_len);
             if(wval==-1){
                 perror("write");
                 return false;
             }
-            if(wval<PROTOCOL_ERR_REPLY_LEN){
+            if(wval<data_to_write_len){
                 std::cout<<"Short write happened at fd "<<conn_fd<<'\n';
-                return true;
+                return false;
             }
             if(DEBUG_MODE)std::cout<<wval<<" bytes got written on "<<conn_fd<<'\n';
-            return false;
         }
+        return !is_error;
         return true;
 }
 
@@ -365,6 +363,12 @@ int main(){
                         return 1;
                     }
                     if(DEBUG_MODE)std::cout<<"client socket fd is "<<conn_fd<<'\n';
+                    int client_sock_opt_val=1;
+                    if(setsockopt(conn_fd,IPPROTO_TCP,TCP_NODELAY,&client_sock_opt_val,sizeof(client_sock_opt_val))==-1){
+                        perror("setsockopt");
+                        close(conn_fd);
+                        continue;
+                    }
                     struct pollfd c{};
                     c.fd=conn_fd;
                     c.events=POLLIN;
