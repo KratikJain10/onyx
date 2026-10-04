@@ -10,6 +10,8 @@
 #include <string>
 #include <utility>
 #include <chrono>
+#include <random>
+#include <cassert>
 
 constexpr int PORT=6379;
 constexpr int BACKLOG_FOR_SOCKET=16;
@@ -18,9 +20,20 @@ constexpr char PING_REPLY[]="+PONG\r\n";
 constexpr ssize_t PING_REPLY_LEN=sizeof(PING_REPLY)-1;
 constexpr char PROTOCOL_ERR_REPLY[]="-ERR Protocol error\r\n";
 constexpr ssize_t PROTOCOL_ERR_REPLY_LEN=sizeof(PROTOCOL_ERR_REPLY)-1;
+constexpr ssize_t POLL_TIMEOUT=100;
+constexpr std::chrono::milliseconds EXP_CYCLE_INTERVAL{100};
+constexpr std::chrono::milliseconds MAX_EXP_CYCLE_RUNTIME{25};
 
 enum class Command {PING,ECHO,SET,GET,UNKNOWN};
 enum class Optional_arguments {EX,PX,UNKNOWN};
+
+size_t random_num_gen(size_t cap){
+    size_t rn;
+    static std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<size_t> pick(0, cap - 1);
+    rn = pick(rng);
+    return rn;
+}
 
 long long string_to_int(const std::string &s,size_t st,size_t en){
     long long res=0;
@@ -252,6 +265,44 @@ bool handle_client(int conn_fd,std::string& client_data,std::unordered_map<std::
         return true;
 }
 
+void expiration_handler(std::unordered_map<std::string,std::string>&db,std::unordered_map<std::string,std::chrono::steady_clock::time_point>&key_expiries){
+    if(key_expiries.empty())return;
+    size_t tot_expiries=key_expiries.size();
+    size_t tot_key_expired_cnt=0;
+    size_t bucket_len=key_expiries.bucket_count();
+    size_t random_num=random_num_gen(bucket_len);
+    size_t iter_count=20;
+    size_t max_key_tolook_cnt=0;
+    size_t tot_bkt_tolook_cnt=100;
+    std::chrono::steady_clock::time_point start_time=std::chrono::steady_clock::now();
+    while(tot_bkt_tolook_cnt>0 && iter_count && std::chrono::steady_clock::now()-start_time<=MAX_EXP_CYCLE_RUNTIME){
+        for(auto it=key_expiries.begin(random_num);it!=key_expiries.end(random_num) && iter_count && std::chrono::steady_clock::now()-start_time<=MAX_EXP_CYCLE_RUNTIME;){
+            if(it->second<=std::chrono::steady_clock::now()){
+                auto itdb=db.find(it->first);
+                std::string key=it->first;
+                it++;
+                key_expiries.erase(key);
+                assert(db.end()!=itdb);
+                db.erase(itdb);
+                tot_key_expired_cnt++;
+                max_key_tolook_cnt++;
+            }else{
+                it++;
+            }
+            iter_count--;
+        }
+        tot_bkt_tolook_cnt--;
+        random_num=random_num_gen(bucket_len);    
+        if(iter_count==0 && max_key_tolook_cnt>5){
+            iter_count=20;
+            tot_bkt_tolook_cnt=100;
+            max_key_tolook_cnt=0;
+        }
+    }
+    
+    std::cout<<"expiration cycle deleted expired key : "<<tot_key_expired_cnt<<" total remaining : "<<tot_expiries-tot_key_expired_cnt<<'\n';
+}
+
 int main(){
     int listen_fd=socket(AF_INET,SOCK_STREAM,0);
     if(listen_fd==-1){
@@ -281,6 +332,7 @@ int main(){
         return 1;
     }
     std::cout<<"server is listening on port: "<<PORT<<'\n';
+    std::chrono::steady_clock::time_point expcycle_last_run_time=std::chrono::steady_clock::now();
     std::vector<struct pollfd>fds;
     std::unordered_map<std::string,std::string>db;
     std::unordered_map<int,std::string>clients_data;
@@ -291,7 +343,7 @@ int main(){
     fds.push_back(p);
     while(true){
         nfds_t fds_len=(nfds_t)fds.size();
-        int poll_val=poll(fds.data(),fds_len,-1);
+        int poll_val=poll(fds.data(),fds_len,POLL_TIMEOUT);
         if(poll_val==-1){
             perror("poll");
             close(listen_fd);
@@ -331,5 +383,10 @@ int main(){
             }
         }
         fds=filtered_fds;
+
+        if(std::chrono::steady_clock::now()-expcycle_last_run_time>=EXP_CYCLE_INTERVAL){
+            expcycle_last_run_time=std::chrono::steady_clock::now();
+            expiration_handler(db,key_expiries);
+        }
     }
 }
